@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi Editor</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#14161a">
+<link rel="icon" href="icons/icon-192.png">
+<style>
+:root{--bg:#fff;--fg:#1f2328;--bar:#eef0f3;--tab:#dfe3e8;--line:#c9ced6;--kw:#c026d3;--st:#15803d;--cm:#8b949e;--nu:#c2410c;--fn:#1d4ed8;--bi:#0e7490;--tg:#b91c1c;--at:#a16207}
+@media(prefers-color-scheme:dark){:root{--bg:#1b1d22;--fg:#e4e6eb;--bar:#14161a;--tab:#2a2d34;--line:#3a3e47;--kw:#e879f9;--st:#86efac;--cm:#7d8590;--nu:#fdba74;--fn:#7cb4ff;--bi:#67e8f9;--tg:#fca5a5;--at:#fcd34d}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif}
+#bar{display:flex;gap:4px;background:var(--bar);padding:4px 6px 0;overflow-x:auto;align-items:flex-end;border-bottom:1px solid var(--line)}
+.tab{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--tab);border-radius:8px 8px 0 0;cursor:pointer;white-space:nowrap}
+.tab.on{background:var(--bg);font-weight:600}
+.tab button{border:0;background:none;color:inherit;opacity:.6;cursor:pointer;padding:0 2px}
+.tab button:hover{opacity:1}
+.tool{border:0;background:none;color:var(--fg);padding:6px 10px;cursor:pointer;border-radius:6px}
+.tool:hover{background:var(--tab)}
+#wrap{position:relative;flex:1;overflow:hidden}
+#hl,#ta{position:absolute;inset:0;margin:0;padding:12px;border:0;font:14px/1.55 ui-monospace,Menlo,Consolas,monospace;tab-size:4;white-space:pre;overflow:auto;letter-spacing:0}
+#hl{pointer-events:none;color:var(--fg)}
+#ta{background:transparent;color:transparent;caret-color:var(--fg);outline:none;resize:none}
+#ta::selection{background:rgba(80,140,255,.35)}
+#st{padding:3px 10px;font-size:12px;background:var(--bar);border-top:1px solid var(--line);opacity:.8}
+.kw{color:var(--kw)}.st{color:var(--st)}.cm{color:var(--cm);font-style:italic}.nu{color:var(--nu)}.fn{color:var(--fn)}.bi{color:var(--bi)}.tg{color:var(--tg)}.at{color:var(--at)}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div id="wrap"><pre id="hl"></pre><textarea id="ta" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div>
+<div id="st"></div>
+<input type="file" id="fi" multiple hidden>
+<script>
+const KW=new Set("False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case".split(" "));
+const BI=new Set("print len range int str float list dict set tuple bool open input sum min max abs sorted enumerate zip map filter type isinstance super self cls object round any all reversed repr format iter next id hash".split(" "));
+const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const sp=(c,s)=>`<span class="${c}">${esc(s)}</span>`;
+function hlPy(t){
+  const re=/(#.*)|([rRbBuUfF]{0,2}("""|''')[\s\S]*?(?:\3|$))|([rRbBuUfF]{0,2}("|')(?:\\.|(?!\5)[^\\\n])*(?:\5|$))|(@[\w.]+)|(0[xX][\da-fA-F]+|\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)|(\b[A-Za-z_]\w*\b)/g;
+  let o="",i=0,m,prev="";
+  while((m=re.exec(t))){
+    o+=esc(t.slice(i,m.index));i=re.lastIndex;const s=m[0];
+    if(m[1])o+=sp("cm",s);
+    else if(m[2]||m[4])o+=sp("st",s);
+    else if(m[6])o+=sp("fn",s);
+    else if(m[7])o+=sp("nu",s);
+    else{
+      const nx=t[i]==="(";
+      if(KW.has(s))o+=sp("kw",s);
+      else if(prev==="def"||prev==="class")o+=sp("fn",s);
+      else if(BI.has(s))o+=sp("bi",s);
+      else if(nx)o+=sp("fn",s);
+      else o+=esc(s);
+      prev=s;continue;
+    }
+    prev="";
+  }
+  return o+esc(t.slice(i));
+}
+function hlHtml(t){
+  const re=/(<!--[\s\S]*?(?:-->|$))|(<\/?)([A-Za-z][\w:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)(>?)|(&#?\w+;)/g;
+  let o="",i=0,m;
+  while((m=re.exec(t))){
+    o+=esc(t.slice(i,m.index));i=re.lastIndex;
+    if(m[1])o+=sp("cm",m[0]);
+    else if(m[6])o+=sp("nu",m[0]);
+    else{
+      o+=sp("tg",m[2]+m[3]);
+      o+=m[4].replace(/(\s+)|([\w:@.-]+)|("[^"]*"|'[^']*')|([^\s\w"']+)/g,(a,w,n,v,r)=>w?w:n?sp("at",n):v?sp("st",v):esc(r));
+      o+=sp("tg",m[5]);
+    }
+  }
+  return o+esc(t.slice(i));
+}
+const mode=n=>/\.py$/i.test(n)?"py":/\.html?$/i.test(n)?"html":"txt";
+
+let tabs=[],cur=null,uid=0;
+const $=id=>document.getElementById(id),ta=$("ta"),hl=$("hl");
+const act=()=>tabs.find(t=>t.id===cur);
+
+function newTab(name="untitled.py",text="",handle=null,dirty=false){
+  const t={id:++uid,name,text,handle,dirty};tabs.push(t);select(t.id);return t;
+}
+function select(id){
+  const a=act();if(a)a.text=ta.value;
+  cur=id;const t=act();ta.value=t.text;render();ta.focus();
+}
+function render(){
+  const t=act();
+  hl.innerHTML=(t?(mode(t.name)==="py"?hlPy(ta.value):mode(t.name)==="html"?hlHtml(ta.value):esc(ta.value)):"")+"\n ";
+  hl.scrollTop=ta.scrollTop;hl.scrollLeft=ta.scrollLeft;
+  drawBar();status();
+}
+function status(){
+  const p=ta.value.slice(0,ta.selectionStart).split("\n");
+  $("st").textContent=`行 ${p.length}, 列 ${p[p.length-1].length+1}　|　${mode(act().name).toUpperCase()}　|　${ta.value.split("\n").length} 行`;
+}
+function drawBar(){
+  const b=$("bar");b.innerHTML="";
+  tabs.forEach(t=>{
+    const d=document.createElement("div");d.className="tab"+(t.id===cur?" on":"");
+    d.onclick=()=>select(t.id);
+    d.append((t.dirty?"● ":"")+t.name);
+    const mv=document.createElement("button");mv.textContent="⧉";mv.title="新しいウィンドウに移動";
+    mv.onclick=e=>{e.stopPropagation();toWindow(t)};
+    const x=document.createElement("button");x.textContent="✕";x.onclick=e=>{e.stopPropagation();close(t.id)};
+    d.append(mv,x);b.append(d);
+  });
+  const add=(l,f,ti)=>{const e=document.createElement("button");e.className="tool";e.textContent=l;e.title=ti;e.onclick=f;b.append(e)};
+  add("＋",()=>newTab(),"新規タブ");add("開く",openFiles,"開く (Ctrl+O)");add("保存",()=>save(),"保存 (Ctrl+S)");
+  add("🗗 新規ウィンドウ",()=>win(""),"空の新しいウィンドウ");
+}
+function close(id){
+  const t=tabs.find(x=>x.id===id);
+  if(t.dirty&&!confirm(`${t.name} は保存されていません。閉じますか？`))return;
+  tabs=tabs.filter(x=>x!==t);
+  if(!tabs.length){if(window.opener||history.length<2)window.close();newTab();return}
+  if(cur===id){cur=null;select(tabs[tabs.length-1].id)}else render();
+}
+async function openFiles(){
+  if(window.showOpenFilePicker){
+    try{
+      const hs=await showOpenFilePicker({multiple:true});
+      for(const h of hs){const f=await h.getFile();add1(f.name,await f.text(),h)}
+    }catch(e){}
+  }else $("fi").click();
+}
+$("fi").onchange=async e=>{for(const f of e.target.files)add1(f.name,await f.text(),null);e.target.value=""};
+function add1(name,text,h){
+  const a=act();
+  if(tabs.length===1&&a&&!a.dirty&&!a.text&&!a.handle){tabs=[];cur=null}
+  newTab(name,text,h,false);
+}
+async function save(as){
+  const t=act();t.text=ta.value;
+  try{
+    if(window.showSaveFilePicker){
+      if(!t.handle||as)t.handle=await showSaveFilePicker({suggestedName:t.name});
+      const w=await t.handle.createWritable();await w.write(t.text);await w.close();
+      t.name=t.handle.name;
+    }else{
+      const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([t.text]));a.download=t.name;a.click();
+    }
+    t.dirty=false;render();
+  }catch(e){}
+}
+function win(hash){window.open(location.href.split("#")[0]+hash,"_blank","popup,width=900,height=700")}
+function toWindow(t){
+  if(t.id===cur)t.text=ta.value;
+  const k="xfer"+Date.now();
+  localStorage.setItem(k,JSON.stringify({name:t.name,text:t.text,dirty:t.dirty}));
+  win("#"+k);
+  if(tabs.length>1){t.dirty=false;close(t.id)}else{t.text="";t.dirty=false;t.name="untitled.py";t.handle=null;ta.value="";render()}
+}
+
+ta.addEventListener("input",()=>{const t=act();t.dirty=true;render()});
+ta.addEventListener("scroll",()=>{hl.scrollTop=ta.scrollTop;hl.scrollLeft=ta.scrollLeft});
+ta.addEventListener("keyup",status);ta.addEventListener("click",status);
+ta.addEventListener("keydown",e=>{
+  const s=ta.selectionStart,en=ta.selectionEnd,v=ta.value;
+  const ins=x=>{document.execCommand("insertText",false,x)};
+  if(e.key==="Tab"){e.preventDefault();ins("    ")}
+  else if(e.key==="Enter"&&!e.ctrlKey){
+    e.preventDefault();
+    const ls=v.lastIndexOf("\n",s-1)+1,line=v.slice(ls,s);
+    let ind=line.match(/^\s*/)[0];
+    if(mode(act().name)==="py"&&/:\s*$/.test(line))ind+="    ";
+    ins("\n"+ind);
+  }
+  else if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();save(e.shiftKey)}
+  else if((e.ctrlKey||e.metaKey)&&e.key==="o"){e.preventDefault();openFiles()}
+});
+window.addEventListener("keydown",e=>{
+  if(e.altKey&&e.key==="n"){e.preventDefault();newTab()}
+  if(e.altKey&&e.key==="w"){e.preventDefault();close(cur)}
+  if(e.altKey&&e.key==="ArrowRight"||e.altKey&&e.key==="ArrowLeft"){
+    e.preventDefault();const i=tabs.findIndex(t=>t.id===cur),n=e.key==="ArrowRight"?1:-1;
+    select(tabs[(i+n+tabs.length)%tabs.length].id);
+  }
+});
+window.addEventListener("beforeunload",e=>{if(tabs.some(t=>t.dirty)){e.preventDefault();e.returnValue=""}});
+
+(function init(){
+  const k=location.hash.slice(1);let d=null;
+  try{if(k.startsWith("xfer")){d=JSON.parse(localStorage.getItem(k));localStorage.removeItem(k)}}catch(e){}
+  if(d)newTab(d.name,d.text,null,d.dirty);
+  else newTab("untitled.py","# Python を書いてみてください\ndef hello(name):\n    print(f\"こんにちは, {name}\")\n\nhello(\"world\")\n");
+})();
+if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+if("launchQueue"in window)launchQueue.setConsumer(async p=>{for(const h of p.files){const f=await h.getFile();add1(f.name,await f.text(),h)}});
+</script>
+</body>
+</html>
