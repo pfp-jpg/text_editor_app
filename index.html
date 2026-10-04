@@ -20,12 +20,18 @@ body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);fon
 .tool{border:0;background:none;color:var(--fg);padding:6px 10px;cursor:pointer;border-radius:6px}
 .tool:hover{background:var(--tab)}
 #wrap{position:relative;flex:1;overflow:hidden}
-#hl,#ta{position:absolute;inset:0;margin:0;padding:12px;border:0;font:14px/1.55 ui-monospace,Menlo,Consolas,monospace;tab-size:4;white-space:pre;overflow:auto;letter-spacing:0}
+#hl,#ta{position:absolute;inset:0;margin:0;padding:12px;border:0;font:var(--fs,14px)/1.55 ui-monospace,Menlo,Consolas,monospace;tab-size:4;white-space:pre;overflow:auto;letter-spacing:0}
 #hl{pointer-events:none;color:var(--fg)}
 #ta{background:transparent;color:transparent;caret-color:var(--fg);outline:none;resize:none}
 #ta::selection{background:rgba(80,140,255,.35)}
 #st{padding:3px 10px;font-size:12px;background:var(--bar);border-top:1px solid var(--line);opacity:.8}
 .kw{color:var(--kw)}.st{color:var(--st)}.cm{color:var(--cm);font-style:italic}.nu{color:var(--nu)}.fn{color:var(--fn)}.bi{color:var(--bi)}.tg{color:var(--tg)}.at{color:var(--at)}
+dialog{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:16px 20px;min-width:300px}
+dialog::backdrop{background:rgba(0,0,0,.4)}
+#tg{display:grid;grid-template-columns:1fr 44px;gap:8px 12px;align-items:center;margin:12px 0}
+#tg input[type=color]{width:44px;height:28px;padding:0;border:1px solid var(--line);background:none;cursor:pointer}
+dialog select,dialog input[type=number]{background:var(--tab);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.row{display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:8px}
 </style>
 </head>
 <body>
@@ -33,6 +39,13 @@ body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);fon
 <div id="wrap"><pre id="hl"></pre><textarea id="ta" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div>
 <div id="st"></div>
 <input type="file" id="fi" multiple hidden>
+<dialog id="dlg">
+  <b>配色の設定</b>
+  <div class="row"><span>プリセット</span><select id="pre"></select></div>
+  <div id="tg"></div>
+  <div class="row"><span>文字サイズ</span><input type="number" id="fs" min="9" max="40" style="width:70px"></div>
+  <div class="row" style="margin-top:16px"><button class="tool" id="rst">自動に戻す</button><button class="tool" id="cls">閉じる</button></div>
+</dialog>
 <script>
 const KW=new Set("False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case".split(" "));
 const BI=new Set("print len range int str float list dict set tuple bool open input sum min max abs sorted enumerate zip map filter type isinstance super self cls object round any all reversed repr format iter next id hash".split(" "));
@@ -111,7 +124,7 @@ function drawBar(){
   });
   const add=(l,f,ti)=>{const e=document.createElement("button");e.className="tool";e.textContent=l;e.title=ti;e.onclick=f;b.append(e)};
   add("＋",()=>newTab(),"新規タブ");add("開く",openFiles,"開く (Ctrl+O)");add("保存",()=>save(),"保存 (Ctrl+S)");
-  add("🗗 新規ウィンドウ",()=>win(""),"空の新しいウィンドウ");
+  add("🎨",openTheme,"配色の設定");add("🗗 新規ウィンドウ",()=>win(""),"空の新しいウィンドウ");
 }
 function close(id){
   const t=tabs.find(x=>x.id===id);
@@ -189,6 +202,44 @@ window.addEventListener("beforeunload",e=>{if(tabs.some(t=>t.dirty)){e.preventDe
   if(d)newTab(d.name,d.text,null,d.dirty);
   else newTab("untitled.py","# Python を書いてみてください\ndef hello(name):\n    print(f\"こんにちは, {name}\")\n\nhello(\"world\")\n");
 })();
+const VARS=[["bg","背景"],["fg","文字"],["kw","キーワード (def, if…)"],["fn","関数名"],["bi","組み込み関数"],["st","文字列"],["nu","数字"],["cm","コメント"],["tg","HTMLタグ"],["at","HTML属性"]];
+const PRESETS={
+"ライト":{bg:"#ffffff",fg:"#1f2328",kw:"#c026d3",st:"#15803d",cm:"#8b949e",nu:"#c2410c",fn:"#1d4ed8",bi:"#0e7490",tg:"#b91c1c",at:"#a16207"},
+"ダーク":{bg:"#1b1d22",fg:"#e4e6eb",kw:"#e879f9",st:"#86efac",cm:"#7d8590",nu:"#fdba74",fn:"#7cb4ff",bi:"#67e8f9",tg:"#fca5a5",at:"#fcd34d"},
+"Monokai":{bg:"#272822",fg:"#f8f8f2",kw:"#f92672",st:"#e6db74",cm:"#75715e",nu:"#ae81ff",fn:"#a6e22e",bi:"#66d9ef",tg:"#f92672",at:"#a6e22e"},
+"Solarized Dark":{bg:"#002b36",fg:"#93a1a1",kw:"#859900",st:"#2aa198",cm:"#586e75",nu:"#d33682",fn:"#268bd2",bi:"#b58900",tg:"#268bd2",at:"#cb4b16"}};
+let theme={v:{},fs:14};
+try{theme=Object.assign(theme,JSON.parse(localStorage.getItem("theme")||"{}"))}catch(e){}
+const saveTheme=()=>{try{localStorage.setItem("theme",JSON.stringify(theme))}catch(e){}};
+function applyTheme(){
+  const r=document.documentElement.style,v=theme.v;
+  VARS.forEach(([k])=>v[k]?r.setProperty("--"+k,v[k]):r.removeProperty("--"+k));
+  if(v.bg&&v.fg){
+    r.setProperty("--bar","color-mix(in srgb,var(--bg) 93%,var(--fg))");
+    r.setProperty("--tab","color-mix(in srgb,var(--bg) 85%,var(--fg))");
+    r.setProperty("--line","color-mix(in srgb,var(--bg) 78%,var(--fg))");
+  }else["bar","tab","line"].forEach(k=>r.removeProperty("--"+k));
+  r.setProperty("--fs",(theme.fs||14)+"px");
+}
+function toHex(c){const e=document.createElement("i");e.style.color=c;document.body.append(e);
+  const m=getComputedStyle(e).color.match(/\d+/g);e.remove();return"#"+m.slice(0,3).map(n=>(+n).toString(16).padStart(2,"0")).join("")}
+function openTheme(){
+  const g=$("tg"),cs=getComputedStyle(document.documentElement);
+  const fill=()=>{g.innerHTML="";VARS.forEach(([k,l])=>{
+    const lab=document.createElement("label");lab.textContent=l;
+    const i=document.createElement("input");i.type="color";
+    i.value=theme.v[k]||toHex(cs.getPropertyValue("--"+k).trim());
+    i.oninput=()=>{theme.v[k]=i.value;if(!theme.v.bg)theme.v.bg=toHex(cs.getPropertyValue("--bg").trim());if(!theme.v.fg)theme.v.fg=toHex(cs.getPropertyValue("--fg").trim());saveTheme();applyTheme();$("pre").value=""};
+    g.append(lab,i)})};
+  const pre=$("pre");pre.innerHTML='<option value="">カスタム/自動</option>'+Object.keys(PRESETS).map(n=>`<option>${n}</option>`).join("");
+  pre.onchange=()=>{if(PRESETS[pre.value]){theme.v={...PRESETS[pre.value]};saveTheme();applyTheme();fill()}};
+  $("fs").value=theme.fs||14;
+  $("fs").oninput=e=>{theme.fs=Math.min(40,Math.max(9,+e.target.value||14));saveTheme();applyTheme()};
+  $("rst").onclick=()=>{theme.v={};theme.fs=14;$("fs").value=14;saveTheme();applyTheme();fill();pre.value=""};
+  $("cls").onclick=()=>$("dlg").close();
+  fill();$("dlg").showModal();
+}
+applyTheme();
 if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if("launchQueue"in window)launchQueue.setConsumer(async p=>{for(const h of p.files){const f=await h.getFile();add1(f.name,await f.text(),h)}});
 </script>
